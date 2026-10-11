@@ -1,62 +1,65 @@
-   # Builds the Kite Reel installer and publishes it as a GitHub release.
-   # It runs whenever the code changes. A release is only made when the version number in
-   # package.json is one that has not been published yet, so bumping that number is what ships an update.
-   name: Build and publish
+# Builds the Kite Reel installer and publishes it as a GitHub release.
+# It runs whenever the code changes. A release is only made when the version number in
+# package.json is one that has not been published yet, so bumping that number is what ships an update.
+name: Build and publish
 
-   on:
-     push:
-       branches: [main]
-     workflow_dispatch:
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
 
-   permissions:
-     contents: write
+permissions:
+  contents: write
 
-   concurrency:
-     group: release
-     cancel-in-progress: false
+concurrency:
+  group: release
+  cancel-in-progress: false
 
-   jobs:
-     windows:
-       runs-on: windows-latest
-       steps:
-         - uses: actions/checkout@v4
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
 
-         - uses: actions/setup-node@v4
-           with:
-             node-version: 22
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
 
-         - name: Check whether this version is already published
-           id: version
-           shell: bash
-           env:
-             GH_TOKEN: ${{ github.token }}
-           run: |
-             version=$(node -p "require('./package.json').version")
-             echo "version=$version" >> "$GITHUB_OUTPUT"
-             if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-               echo "Version $version is already published. Nothing to do."
-               echo "publish=false" >> "$GITHUB_OUTPUT"
-             else
-               echo "Version $version is new. Building it."
-               echo "publish=true" >> "$GITHUB_OUTPUT"
-             fi
+      - name: Check whether this version is already published
+        id: version
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null | grep -q "latest.yml"; then
+            echo "Version $version is already published. Nothing to do."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version $version is new. Building it."
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
 
-         - name: Install
-           if: steps.version.outputs.publish == 'true'
-           run: npm install --no-audit --no-fund
+      - name: Install
+        if: steps.version.outputs.publish == 'true'
+        run: npm install --no-audit --no-fund
 
-         - name: Build the installer and publish the release
-           if: steps.version.outputs.publish == 'true'
-           env:
-             GH_TOKEN: ${{ github.token }}
-           run: npx electron-builder --win --publish always
+      - name: Build the installer
+        if: steps.version.outputs.publish == 'true'
+        run: npx electron-builder --win --publish never
 
-         - name: Keep the installer with this run too
-           if: steps.version.outputs.publish == 'true'
-           uses: actions/upload-artifact@v4
-           with:
-             name: Kite-Reel-Setup-${{ steps.version.outputs.version }}
-             path: |
-               dist/*.exe
-               dist/latest.yml
-             if-no-files-found: error
+      - name: Publish the release
+        if: steps.version.outputs.publish == 'true'
+        shell: bash
+        run: |
+          v="${{ steps.version.outputs.version }}"
+          ls -l dist
+          files=("dist/Kite-Reel-Setup-$v.exe" "dist/latest.yml")
+          if [ -f "dist/Kite-Reel-Setup-$v.exe.blockmap" ]; then files+=("dist/Kite-Reel-Setup-$v.exe.blockmap"); fi
+          if gh release view "v$v" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "v$v" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "v$v" --draft=false --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "v$v" "${files[@]}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Kite Reel $v" --notes "Download Kite-Reel-Setup-$v.exe and run it. Installed copies of Kite Reel update themselves."
+          fi
