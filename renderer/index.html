@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'">
+<title>Kite Reel</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Sans:wght@400..700&family=DM+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app" id="app">
+  <header class="bar">
+    <div class="brand" aria-label="Kite Reel">
+      <svg viewBox="0 0 22 27" aria-hidden="true">
+        <path d="M11 1 2 9.5h9z" fill="var(--k-coral)"/><path d="M11 1l9 8.5h-9z" fill="var(--k-sun)"/>
+        <path d="M2 9.5 11 22V9.5z" fill="var(--k-sky)"/><path d="M20 9.5 11 22V9.5z" fill="var(--k-deep)"/>
+        <path d="M11 22c-2.4 1.2-2.6 2.6-.6 4" fill="none" stroke="var(--fg-3)" stroke-width="1.2" stroke-linecap="round"/>
+      </svg>
+      <div class="word">Kite <span>Reel</span></div>
+    </div>
+    <div class="doc"><b id="doc-name">Untitled project</b><span id="doc-state"></span></div>
+    <button class="btn quiet small" id="btn-new" title="Start a new project">New</button>
+    <button class="btn quiet small" id="btn-open" title="Open a project (Ctrl+O)">Open</button>
+    <button class="btn quiet small" id="btn-save" title="Save the project (Ctrl+S)">Save</button>
+    <div class="spacer"></div>
+    <div class="update" id="update" hidden>
+      <span id="update-text"></span>
+      <button class="btn small" id="btn-update" hidden>Restart to update</button>
+    </div>
+    <button class="btn quiet icon" id="btn-undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3 2.5 6l3 3"/><path d="M3 6h6.2a3.8 3.8 0 0 1 0 7.6H6.5"/></svg>
+    </button>
+    <button class="btn quiet icon" id="btn-redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3l3 3-3 3"/><path d="M13 6H6.8a3.8 3.8 0 0 0 0 7.6h2.7"/></svg>
+    </button>
+    <button class="btn primary" id="btn-export" title="Export (Ctrl+E)" disabled>Export</button>
+  </header>
+
+  <div class="top">
+    <aside class="bin">
+      <div class="pane-head"><h2>Media</h2><button class="btn small" id="btn-import" title="Import videos, photos and sounds (Ctrl+I)">Import</button></div>
+      <div class="bin-list" id="bin-list"></div>
+      <p class="bin-empty" id="bin-empty">Import videos, photos and sounds, then drag them onto the timeline.</p>
+      <div class="bin-foot"><button class="btn" id="btn-add-text" title="Add a text layer at the playhead (T)">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4V3h10v1M8 3v10M6 13h4"/></svg>Add text</button></div>
+    </aside>
+
+    <section class="stagecol">
+      <div class="stage" id="stage">
+        <div class="frame" id="frame">
+          <canvas id="view" width="16" height="16" aria-label="Preview"></canvas>
+          <div class="selbox" id="selbox" hidden><i class="knob" id="knob" title="Drag to resize"></i></div>
+        </div>
+        <div class="empty" id="empty">
+          <h1 id="empty-title">Import media to start</h1>
+          <p id="empty-text">Bring in videos, photos and sounds, then drag them onto the timeline below.</p>
+          <button class="btn primary" id="btn-import-2">Import media</button>
+        </div>
+        <div class="busy" id="busy" hidden><div class="busy-card"><span id="busy-text">Working</span><div class="meter"><i id="busy-bar"></i></div></div></div>
+        <div class="drop" id="drop" hidden>Drop files to import them</div>
+      </div>
+      <div class="transport">
+        <div class="time"><b id="t-now">00:00.00</b><span id="t-total"> / 00:00.00</span></div>
+        <div class="spacer"></div>
+        <button class="btn quiet icon" id="btn-start" title="Go to the start (Home)" aria-label="Go to the start">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="3" y="3" width="1.8" height="10" rx=".6"/><path d="M13 3.6v8.8a.5.5 0 0 1-.8.4L6.4 8.4a.5.5 0 0 1 0-.8l5.8-4.4a.5.5 0 0 1 .8.4z"/></svg>
+        </button>
+        <button class="btn icon play" id="btn-play" title="Play or pause (Space)" aria-label="Play">
+          <svg id="ico-play" viewBox="0 0 16 16" fill="currentColor"><path d="M4.5 2.8v10.4a.6.6 0 0 0 .9.5l8.4-5.2a.6.6 0 0 0 0-1L5.4 2.3a.6.6 0 0 0-.9.5z"/></svg>
+          <svg id="ico-pause" viewBox="0 0 16 16" fill="currentColor" hidden><rect x="3.5" y="2.5" width="3.2" height="11" rx="1"/><rect x="9.3" y="2.5" width="3.2" height="11" rx="1"/></svg>
+        </button>
+        <button class="btn quiet icon" id="btn-end" title="Go to the end (End)" aria-label="Go to the end">
+          <svg viewBox="0 0 16 16" fill="currentColor"><rect x="11.2" y="3" width="1.8" height="10" rx=".6"/><path d="M3 3.6v8.8a.5.5 0 0 0 .8.4l5.8-4.4a.5.5 0 0 0 0-.8L3.8 3.2a.5.5 0 0 0-.8.4z"/></svg>
+        </button>
+        <div class="spacer"></div>
+        <div class="canvas-info" id="canvas-info"></div>
+      </div>
+    </section>
+
+    <aside class="inspector" id="inspector"></aside>
+  </div>
+
+  <section class="tl" id="tl">
+    <div class="tl-tools">
+      <button class="btn quiet small" id="btn-split" title="Split the clip at the playhead (S)" disabled>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 1.5v13"/><path d="M3 5h3M3 11h3M10 5h3M10 11h3"/></svg>Split</button>
+      <button class="btn quiet small" id="btn-delete" title="Delete the selected clip (Delete)" disabled>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>Delete</button>
+      <span class="sep"></span>
+      <div class="menu-wrap">
+        <button class="btn quiet small" id="btn-add-track" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>Track</button>
+        <div class="menu" id="menu-track" hidden>
+          <button type="button" data-kind="video">Video track</button>
+          <button type="button" data-kind="audio">Audio track</button>
+          <button type="button" data-kind="text">Text track</button>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn quiet small" id="btn-snap" aria-pressed="true" title="Clips snap to each other and to the playhead">Snap</button>
+      <span class="sep"></span>
+      <button class="btn quiet small" id="btn-fit" title="Show the whole project">Fit</button>
+      <input type="range" id="zoom" min="0" max="100" step="1" value="50" aria-label="Timeline zoom" title="Zoom (Ctrl + scroll)">
+    </div>
+    <div class="tl-scroll" id="tl-scroll">
+      <div class="tl-content" id="tl-content">
+        <div class="tl-ruler-row"><div class="tl-corner"></div><div class="tl-ruler" id="tl-ruler"><canvas id="ruler" height="26"></canvas></div></div>
+        <div id="tl-rows"></div>
+        <div class="tl-playhead" id="tl-playhead"><i></i></div>
+        <div class="tl-snapline" id="tl-snapline" hidden></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<dialog id="dlg" aria-labelledby="dlg-title">
+  <h2 id="dlg-title">Export video</h2>
+  <div id="ex-setup">
+    <div class="field"><span>Size</span>
+      <div class="seg" id="seg-size">
+        <button type="button" id="size-0" data-v="0" aria-pressed="true">Full</button>
+        <button type="button" id="size-720" data-v="720" aria-pressed="false">720p</button>
+        <button type="button" id="size-480" data-v="480" aria-pressed="false">480p</button>
+      </div>
+    </div>
+    <div class="field"><span>Quality</span>
+      <div class="seg" id="seg-quality">
+        <button type="button" id="q-18" data-v="18" aria-pressed="false">High</button>
+        <button type="button" id="q-22" data-v="22" aria-pressed="true">Standard</button>
+        <button type="button" id="q-27" data-v="27" aria-pressed="false">Small file</button>
+      </div>
+    </div>
+    <p class="meta" id="ex-meta"></p>
+    <div class="actions">
+      <button type="button" class="btn quiet" id="ex-cancel">Close</button>
+      <button type="button" class="btn primary" id="ex-go">Choose where to save</button>
+    </div>
+  </div>
+  <div id="ex-run" hidden>
+    <p class="status" id="ex-status">Exporting</p>
+    <div class="meter big"><i id="ex-bar"></i></div>
+    <p class="meta" id="ex-detail"></p>
+    <div class="actions">
+      <button type="button" class="btn quiet" id="ex-stop">Cancel export</button>
+      <button type="button" class="btn" id="ex-reveal" hidden>Show in folder</button>
+      <button type="button" class="btn primary" id="ex-done" hidden>Done</button>
+    </div>
+  </div>
+</dialog>
+<dialog id="dlg-ask" aria-labelledby="ask-title">
+  <h2 id="ask-title"></h2>
+  <p class="hint" id="ask-text"></p>
+  <div class="actions">
+    <button type="button" class="btn quiet" id="ask-no">Cancel</button>
+    <button type="button" class="btn primary" id="ask-yes">OK</button>
+  </div>
+</dialog>
+<div class="ghost" id="ghost" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="main.js"></script>
+</body>
+</html>
