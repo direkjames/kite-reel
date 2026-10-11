@@ -1,0 +1,62 @@
+   # Builds the Kite Reel installer and publishes it as a GitHub release.
+   # It runs whenever the code changes. A release is only made when the version number in
+   # package.json is one that has not been published yet, so bumping that number is what ships an update.
+   name: Build and publish
+
+   on:
+     push:
+       branches: [main]
+     workflow_dispatch:
+
+   permissions:
+     contents: write
+
+   concurrency:
+     group: release
+     cancel-in-progress: false
+
+   jobs:
+     windows:
+       runs-on: windows-latest
+       steps:
+         - uses: actions/checkout@v4
+
+         - uses: actions/setup-node@v4
+           with:
+             node-version: 22
+
+         - name: Check whether this version is already published
+           id: version
+           shell: bash
+           env:
+             GH_TOKEN: ${{ github.token }}
+           run: |
+             version=$(node -p "require('./package.json').version")
+             echo "version=$version" >> "$GITHUB_OUTPUT"
+             if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+               echo "Version $version is already published. Nothing to do."
+               echo "publish=false" >> "$GITHUB_OUTPUT"
+             else
+               echo "Version $version is new. Building it."
+               echo "publish=true" >> "$GITHUB_OUTPUT"
+             fi
+
+         - name: Install
+           if: steps.version.outputs.publish == 'true'
+           run: npm install --no-audit --no-fund
+
+         - name: Build the installer and publish the release
+           if: steps.version.outputs.publish == 'true'
+           env:
+             GH_TOKEN: ${{ github.token }}
+           run: npx electron-builder --win --publish always
+
+         - name: Keep the installer with this run too
+           if: steps.version.outputs.publish == 'true'
+           uses: actions/upload-artifact@v4
+           with:
+             name: Kite-Reel-Setup-${{ steps.version.outputs.version }}
+             path: |
+               dist/*.exe
+               dist/latest.yml
+             if-no-files-found: error
