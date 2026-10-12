@@ -85,8 +85,13 @@
     <div class="tl-tools">
       <button class="btn quiet small" id="btn-split" title="Split the clip at the playhead (S)" disabled>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 1.5v13"/><path d="M3 5h3M3 11h3M10 5h3M10 11h3"/></svg>Split</button>
-      <button class="btn quiet small" id="btn-delete" title="Delete the selected clip (Delete)" disabled>
+      <button class="btn quiet small" id="btn-delete" title="Delete the selected clips (Delete)" disabled>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>Delete</button>
+      <span class="sep"></span>
+      <button class="btn quiet small" id="btn-copy" title="Copy the selected clips (Ctrl+C)" disabled>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.6"/><path d="M10.5 3.5v-.2A1.3 1.3 0 0 0 9.200 2H3.800A1.300 1.300 0 0 0 2.500 3.300v5.400A1.300 1.300 0 0 0 3.800 10H4"/></svg>Copy</button>
+      <button class="btn quiet small" id="btn-paste" title="Paste at the playhead (Ctrl+V)" disabled>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3H4.300A1.300 1.300 0 0 0 3 4.300v8.400A1.300 1.300 0 0 0 4.300 14h7.400a1.300 1.300 0 0 0 1.300-1.300V4.300A1.300 1.300 0 0 0 11.700 3H10"/><rect x="6" y="1.800" width="4" height="2.600" rx=".9"/></svg>Paste</button>
       <span class="sep"></span>
       <div class="menu-wrap">
         <button class="btn quiet small" id="btn-add-track" aria-haspopup="true" aria-expanded="false">
@@ -109,6 +114,7 @@
         <div id="tl-rows"></div>
         <div class="tl-playhead" id="tl-playhead"><i></i></div>
         <div class="tl-snapline" id="tl-snapline" hidden></div>
+        <div class="tl-marquee" id="tl-marquee" hidden></div>
       </div>
     </div>
   </section>

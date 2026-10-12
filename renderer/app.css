@@ -199,6 +199,24 @@ textarea{min-height:64px;resize:vertical;line-height:1.35}
 .tl-playhead::before{content:"";position:absolute;left:-1px;top:0;bottom:0;width:2px;background:var(--play)}
 .tl-playhead i{position:sticky;top:0;display:block;width:13px;height:13px;margin-left:-6.5px;border-radius:3px 3px 7px 7px;background:var(--play)}
 .tl-snapline{position:absolute;top:26px;bottom:0;width:0;border-left:1px dashed var(--sel);z-index:7;pointer-events:none}
+.tl-marquee{position:absolute;z-index:9;border:1px solid var(--sel);background:var(--accent-soft);pointer-events:none}
+/* how long a clip takes to fade in or out, drawn as a wedge */
+.clip .fade{position:absolute;top:0;bottom:0;max-width:100%;background:rgba(0,0,0,.5);pointer-events:none}
+.clip .fade.in{left:0;clip-path:polygon(0 0,100% 0,0 100%)}
+.clip .fade.out{right:0;clip-path:polygon(0 0,100% 0,100% 100%)}
+/* the join between two touching clips: add or pick a transition here */
+/* it sits at the foot of the join, so the edges above it can still be grabbed for trimming */
+.cut{position:absolute;bottom:2px;z-index:3;transform:translateX(-50%);width:14px;height:14px;padding:0;border:0;border-radius:7px;display:grid;place-items:center;cursor:pointer;
+  background:var(--panel);color:var(--fg-2);box-shadow:0 0 0 1px var(--fg-3);opacity:.8;transition:opacity .12s}
+.cut svg{width:9px;height:9px;display:block}
+.tl-lane:hover .cut,.cut.on,.cut.sel{opacity:1}
+.cut.on{height:15px;border-radius:5px;background:var(--sel);color:var(--sel-ink);box-shadow:0 0 0 1px var(--sel-ink)}
+.cut.on svg{width:11px;height:11px}
+.cut.sel{box-shadow:0 0 0 2px var(--fg),0 0 0 3.500px var(--panel)}
+.tabs{margin:12px 0 2px}
+.trio{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}
+.trio .btn{width:100%;padding:0 4px}
+.tabpage[hidden]{display:none}
 
 /* dialogs */
 dialog{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:16px;padding:20px;width:min(420px,calc(100vw - 32px));box-shadow:var(--shadow)}

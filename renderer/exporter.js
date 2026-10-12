@@ -1,5 +1,5 @@
 // Turns the project into an export request and runs the export dialog.
-import { S, clipsOn, mediaOf, duration, snapFrame, rectOf, isNeutral } from './store.js';
+import { S, clipsOn, mediaOf, duration, snapFrame, rectOf, isNeutral, speedOf, reach, dissolveMode } from './store.js';
 import { compositor, pause } from './player.js';
 import { drawText } from './text.js';
 import { $, $$, api, waitJob, toast, fmtTime, native } from './util.js';
@@ -10,6 +10,13 @@ const b64 = bytes => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000
  * Describes the project for the engine: every picture layer from the back to the front with its place and timing,
  * every sound, and each distinct look as a colour table. Returns { spec, skipped } where skipped counts clips left
  * out because their file is missing.
+ *
+ * Fades and transitions are written out as plain ramps, so the engine needs to know nothing about clips touching:
+ *   fadeIn / fadeOut   seconds over which the layer goes from see-through to solid at its start, and back at its end
+ *   whiteIn / whiteOut seconds over which it comes out of white at its start, and goes to white at its end (flash)
+ *   patch              a rectangle of the layer that stays solid for its last `dur` seconds (see dissolveMode)
+ * A clip in a cross dissolve is shown a little before its start and after its end. For a video, `in` and `len` cover
+ * that extra footage where the file has it, and padStart / padEnd say how long to hold the first or last frame where not.
  */
 export function buildSpec(outPath, crf, outHeight) {
   const { w: cw, h: ch, fps } = S.p.canvas, layers = [], audio = [], luts = [], lutIndex = new Map();
@@ -23,25 +30,41 @@ export function buildSpec(outPath, crf, outHeight) {
   for (let i = S.p.tracks.length - 1; i >= 0; i--) {
     const tr = S.p.tracks[i];
     for (const c of clipsOn(tr.id)) {
+      const { li, lo, lead, tail, pre, post } = reach(c), sp = speedOf(c);
+      const mode = lo && lo.type === 'dissolve' ? dissolveMode(c, lo.next) : null;
+      // how the picture comes and goes
+      const looks = {
+        start: c.start - lead, dur: lead + c.dur + tail,
+        fadeIn: li ? (li.type === 'dissolve' ? li.dur : 0) : Math.min(c.fadeIn || 0, c.dur),
+        fadeOut: lo ? (mode && mode.cross ? lo.dur : 0) : Math.min(c.fadeOut || 0, c.dur),
+        whiteIn: li && li.type === 'flash' ? li.half : 0, whiteOut: lo && lo.type === 'flash' ? lo.half : 0,
+      };
       if (c.kind === 'text') {
         if (tr.hidden) continue;
         const d = drawText(c, cw, ch);
-        layers.push({ type: 'text', png: d.canvas.toDataURL('image/png').split(',')[1], start: c.start, dur: c.dur, x: Math.round(d.x), y: Math.round(d.y) });
+        layers.push({ type: 'text', png: d.canvas.toDataURL('image/png').split(',')[1], x: Math.round(d.x), y: Math.round(d.y), ...looks });
         continue;
       }
       const m = mediaOf(c.media), rt = S.rt.get(c.media);
       if (!m || !rt || rt.missing) { skipped++; continue; }
+      // the stretch of the file to read, and how its sound comes and goes
+      const src = { in: c.in - pre * sp, len: (pre + c.dur + post) * sp, speed: sp };
+      const sound = { ...src, id: rt.sid, start: c.start - pre, dur: pre + c.dur + post, volume: c.volume, mono: m.mono,
+        fadeIn: li ? (li.type === 'dissolve' ? pre + li.half : 0) : Math.min(c.fadeIn || 0, c.dur),
+        fadeOut: lo ? (lo.type === 'dissolve' ? post + lo.half : 0) : Math.min(c.fadeOut || 0, c.dur) };
       if (c.kind === 'audio') {
-        if (!tr.muted && c.volume > 0) audio.push({ layer: -1, id: rt.sid, in: c.in, start: c.start, dur: c.dur, volume: c.volume, fadeIn: c.fadeIn, fadeOut: c.fadeOut, mono: m.mono });
+        if (!tr.muted && c.volume > 0) audio.push({ layer: -1, ...sound });
         continue;
       }
       let layer = -1;
       if (!tr.hidden && c.opacity > 0) {
         const r = rectOf(c);
-        layers.push({ type: c.kind, id: rt.sid, in: c.in, start: c.start, dur: c.dur, x: r.x, y: r.y, w: r.w, h: r.h, opacity: c.opacity, lut: lutFor(c.adj) });
+        layers.push({ type: c.kind, id: rt.sid, ...src, padStart: lead - pre, padEnd: tail - post, x: r.x, y: r.y, w: r.w, h: r.h,
+          rot: c.rot, flip: c.flip, crop: [c.crop.l, c.crop.t, c.crop.r, c.crop.b], opacity: c.opacity, lut: lutFor(c.adj), ...looks,
+          patch: mode && mode.patch ? { ...mode.patch, dur: lo.dur } : null });
         layer = layers.length - 1;
       }
-      if (c.kind === 'video' && m.hasAudio && !tr.muted && c.volume > 0) audio.push({ layer, id: rt.sid, in: c.in, start: c.start, dur: c.dur, volume: c.volume, fadeIn: 0, fadeOut: 0, mono: m.mono });
+      if (c.kind === 'video' && m.hasAudio && !tr.muted && c.volume > 0) audio.push({ layer, ...sound });
     }
   }
   return { spec: { outPath, width: cw, height: ch, fps, duration: snapFrame(duration()), crf, outHeight, layers, audio, luts }, skipped };

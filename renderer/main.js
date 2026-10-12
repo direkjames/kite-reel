@@ -1,5 +1,5 @@
 // Starts the editor and connects the top bar, the keyboard and the Windows app's services.
-import { S, on, newProject, resetHistory, emit, undo, redo, canUndo, canRedo, duration, frameLen, selected } from './store.js';
+import { S, on, newProject, resetHistory, emit, undo, redo, canUndo, canRedo, duration, frameLen, select } from './store.js';
 import * as player from './player.js';
 import * as timeline from './timeline.js';
 import * as panels from './panels.js';
@@ -74,11 +74,17 @@ function wire() {
     if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (mod && k === 'y') { e.preventDefault(); redo(); return; }
     if (mod && k === 'b') { e.preventDefault(); timeline.splitAtPlayhead(); return; }
+    if (mod && k === 'c') { e.preventDefault(); timeline.copy(); return; }
+    if (mod && k === 'x') { e.preventDefault(); timeline.cut(); return; }
+    if (mod && k === 'v') { e.preventDefault(); timeline.paste(); return; }
+    if (mod && k === 'd') { e.preventDefault(); timeline.duplicate(); return; }
+    if (mod && k === 'a') { e.preventDefault(); timeline.selectAll(); return; }
     if (mod) return;
     if (e.code === 'Space') { e.preventDefault(); if (tag === 'BUTTON') e.target.blur(); player.toggle(); }      // Space always plays or pauses, whatever was clicked last
     else if (k === 's') timeline.splitAtPlayhead();
     else if (k === 't') panels.addText();
-    else if (e.key === 'Delete' || e.key === 'Backspace') { if (selected()) { e.preventDefault(); timeline.deleteSelected(); } }
+    else if (e.key === 'Delete' || e.key === 'Backspace') { if (S.sel.length || S.cut) { e.preventDefault(); timeline.deleteSelected(); } }
+    else if (e.key === 'Escape') select(null);
     else if (tag === 'INPUT') return;                      // arrow keys belong to the slider that has focus
     else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); player.pause(); player.seek(S.t + (e.shiftKey ? 1 : frameLen()) * (e.key === 'ArrowLeft' ? -1 : 1)); }
     else if (e.key === 'Home') player.seek(0);
@@ -126,5 +132,7 @@ async function start() {
   window.kiteReady = true;
 }
 // lets the automated checks read the editor's state
-window.kiteState = () => JSON.parse(JSON.stringify({ p: S.p, sel: S.sel, t: S.t, playing: S.playing, pps: S.pps, path: S.path, dirty: S.dirty }));
+window.kiteState = () => JSON.parse(JSON.stringify({ p: S.p, sel: S.sel, cut: S.cut, t: S.t, playing: S.playing, pps: S.pps, path: S.path, dirty: S.dirty }));
+window.kitePlayers = () => player.players();
+window.kiteSpec = () => exporter.buildSpec('', 22, 0).spec;
 start();

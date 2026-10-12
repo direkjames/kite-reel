@@ -1,5 +1,5 @@
 // Plays the project: keeps each clip's video or sound in step with the playhead and draws the stacked preview.
-import { S, on, emit, clipOf, trackOf, mediaOf, duration, snapFrame, rectOf, isNeutral, select, commit, touch, selected, visualAt } from './store.js';
+import { S, on, emit, clipOf, clipsOn, trackOf, mediaOf, duration, snapFrame, rectOf, uvOf, isNeutral, select, commit, touch, selected, speedOf, reach, showAt, loudAt } from './store.js';
 import { Compositor } from './gl.js';
 import { drawText, textKey } from './text.js';
 import { $, clamp } from './util.js';
@@ -12,6 +12,8 @@ let hits = [];                               // what is on screen right now, bot
 let raf = 0, clock = null;
 
 export const compositor = () => comp;
+/** For the automated checks: what each clip's player is doing right now. */
+export const players = () => [...live].map(([id, L]) => ({ id, time: L.el.currentTime, paused: L.el.paused, rate: L.el.playbackRate, volume: L.el.muted ? 0 : L.el.volume }));
 
 /* ---------- media elements ---------- */
 function playerFor(c) {
@@ -32,34 +34,29 @@ function release(id) {
   try { L.el.pause(); L.el.removeAttribute('src'); L.el.load(); } catch (e) { /* already gone */ }
   live.delete(id); if (comp) comp.drop('clip:' + id);
 }
-function loudness(c, t) {
-  let v = c.volume;
-  if (c.kind === 'audio') {
-    const into = t - c.start, left = c.start + c.dur - t;
-    if (c.fadeIn > 0 && into < c.fadeIn) v *= clamp(into / c.fadeIn, 0, 1);
-    if (c.fadeOut > 0 && left < c.fadeOut) v *= clamp(left / c.fadeOut, 0, 1);
-  }
-  return clamp(v, 0, 1);
-}
 /** Lines every nearby clip's player up with time t, and lets go of the ones that are far away. */
 function sync(t) {
   const seen = new Set();
   for (const c of S.p.clips) {
     if (c.kind === 'text' || c.kind === 'image') continue;
-    const active = t >= c.start - 1e-6 && t < c.start + c.dur - 1e-6;
-    if (!(t >= c.start - 2 && t < c.start + c.dur + 1)) continue;
+    const m = mediaOf(c.media); if (!m) continue;
+    const { lead, tail } = reach(c), sp = speedOf(c), end = c.start + c.dur;
+    if (!(t >= c.start - lead - 2 && t < end + tail + 1)) continue;
     const L = playerFor(c); if (!L) continue;
     seen.add(c.id);
-    const el = L.el, tr = trackOf(c.track), m = mediaOf(c.media);
-    const local = clamp(c.in + (t - c.start), c.in, c.in + c.dur);
-    const vol = active && tr && !tr.muted && m && m.hasAudio ? loudness(c, t) : 0;
+    const el = L.el, tr = trackOf(c.track);
+    const shown = t >= c.start - lead - 1e-6 && t < end + tail - 1e-6;      // a cross dissolve shows a clip a little before and after its own length
+    const raw = c.in + (t - c.start) * sp, local = clamp(raw, 0, m.duration);
+    const moving = shown && raw >= 0 && raw <= m.duration;                    // past either end of the file the picture holds still
+    const vol = moving && tr && !tr.muted && m.hasAudio ? loudAt(c, t) : 0;
     el.muted = vol <= 0; el.volume = vol;
-    if (active && S.playing) {
-      if (el.paused) { if (Math.abs(el.currentTime - local) > 0.05) el.currentTime = local; el.play().catch(() => {}); }
-      else if (Math.abs(el.currentTime - local) > 0.3) el.currentTime = local;      // drifted: pull it back
+    if (el.playbackRate !== sp) el.playbackRate = sp;
+    if (moving && S.playing) {
+      if (el.paused) { if (Math.abs(el.currentTime - local) > 0.05 * sp) el.currentTime = local; el.play().catch(() => {}); }
+      else if (Math.abs(el.currentTime - local) > 0.3 * Math.max(1, sp)) el.currentTime = local;      // drifted: pull it back
     } else {
       if (!el.paused) el.pause();
-      const target = active ? local : t < c.start ? c.in : null;                     // clips about to start wait on their first frame
+      const target = shown ? local : t < c.start ? clamp(c.in - lead * sp, 0, m.duration) : null;      // clips about to start wait on their first frame
       if (target !== null && !el.seeking && Math.abs(el.currentTime - target) > 0.02) el.currentTime = target;
     }
   }
@@ -76,24 +73,27 @@ function render() {
   for (let i = S.p.tracks.length - 1; i >= 0; i--) {         // the last track is the furthest back
     const tr = S.p.tracks[i];
     if (tr.kind === 'audio' || tr.hidden) continue;
-    const c = visualAt(tr.id, S.t); if (!c) continue;
-    if (c.kind === 'text') {
-      const d = drawText(c, cw, ch), key = 'text:' + c.id, sig = textKey(c, cw, ch);
-      if (textSig.get(c.id) !== sig) { comp.put(key, d.canvas, true); textSig.set(c.id, sig); }
-      comp.layer(key, d, cw, ch, null, 1);
-      hits.push({ id: c.id, r: d });
-    } else {
-      const r = rectOf(c); let key;
-      if (c.kind === 'image') {
-        const rt = S.rt.get(c.media); key = 'img:' + c.media;
-        if (!comp.has(key) && rt && rt.img && rt.img.complete && rt.img.naturalWidth) comp.put(key, rt.img);
+    for (const c of clipsOn(tr.id)) {                        // usually one clip of a track is showing; during a cross dissolve, two
+      const s = showAt(c, S.t); if (!s) continue;
+      if (c.kind === 'text') {
+        const d = drawText(c, cw, ch), key = 'text:' + c.id, sig = textKey(c, cw, ch);
+        if (textSig.get(c.id) !== sig) { comp.put(key, d.canvas, true); textSig.set(c.id, sig); }
+        comp.layer(key, d, cw, ch, null, s.opacity, undefined, s.flash);
+        if (s.own) hits.push({ id: c.id, r: d });
       } else {
-        key = 'clip:' + c.id;
-        const L = live.get(c.id);
-        if (L && L.el.readyState >= 2 && L.el.videoWidth) comp.put(key, L.el);
+        const r = rectOf(c), uv = uvOf(c), adj = isNeutral(c.adj) ? null : c.adj; let key;
+        if (c.kind === 'image') {
+          const rt = S.rt.get(c.media); key = 'img:' + c.media;
+          if (!comp.has(key) && rt && rt.img && rt.img.complete && rt.img.naturalWidth) comp.put(key, rt.img);
+        } else {
+          key = 'clip:' + c.id;
+          const L = live.get(c.id);
+          if (L && L.el.readyState >= 2 && L.el.videoWidth) comp.put(key, L.el);
+        }
+        comp.layer(key, r, cw, ch, adj, s.opacity, uv, s.flash);
+        if (s.patch) { comp.only(s.patch.rect, cw, ch); comp.layer(key, r, cw, ch, adj, s.patch.opacity, uv, s.flash); comp.only(null); }
+        if (s.own) hits.push({ id: c.id, r });
       }
-      comp.layer(key, r, cw, ch, isNeutral(c.adj) ? null : c.adj, c.opacity);
-      hits.push({ id: c.id, r });
     }
   }
   placeSelBox();
@@ -142,7 +142,7 @@ function layout() {
   view.w = Math.max(1, Math.round(cssW * dpr * cap)); view.h = Math.max(1, Math.round(cssH * dpr * cap)); view.css = cssW / cw;
 }
 function placeSelBox() {
-  const h = S.sel ? hits.find(x => x.id === S.sel) : null;
+  const one = selected(), h = one ? hits.find(x => x.id === one.id) : null;
   if (!h) { selbox.hidden = true; return; }
   selbox.hidden = false;
   selbox.style.left = h.r.x * view.css + 'px'; selbox.style.top = h.r.y * view.css + 'px';
@@ -177,16 +177,21 @@ function wirePointer() {
   // the round knob resizes the selected layer about its centre
   const knob = $('#knob'); let size = null;
   knob.addEventListener('pointerdown', e => {
-    const c = selected(), h = hits.find(x => x.id === S.sel); if (!c || !h) return;
+    const c = selected(), h = c && hits.find(x => x.id === c.id); if (!c || !h) return;
     e.preventDefault(); e.stopPropagation();
     try { knob.setPointerCapture(e.pointerId); } catch (err) { /* synthetic pointer */ }
     const b = canvas.getBoundingClientRect(), cx = b.left + (h.r.x + h.r.w / 2) * view.css, cy = b.top + (h.r.y + h.r.h / 2) * view.css;
-    size = { id: e.pointerId, c, cx, cy, d0: Math.max(4, Math.hypot(e.clientX - cx, e.clientY - cy)), v0: c.kind === 'text' ? c.size : c.scale };
+    size = { id: e.pointerId, c, cx, cy, d0: Math.max(4, Math.hypot(e.clientX - cx, e.clientY - cy)), v0: c.kind === 'text' ? c.size : c.scale, mx: h.r.x + h.r.w / 2, my: h.r.y + h.r.h / 2 };
   });
   knob.addEventListener('pointermove', e => {
     if (!size || e.pointerId !== size.id) return;
     const k = Math.hypot(e.clientX - size.cx, e.clientY - size.cy) / size.d0;
-    if (size.c.kind === 'text') size.c.size = clamp(size.v0 * k, 0.02, 0.6); else size.c.scale = clamp(size.v0 * k, 0.05, 8);
+    if (size.c.kind === 'text') size.c.size = clamp(size.v0 * k, 0.02, 0.6);
+    else {
+      size.c.scale = clamp(size.v0 * k, 0.05, 8);
+      const r = rectOf(size.c);                             // a cropped picture grows about the middle of what is left of it
+      size.c.x += (size.mx - (r.x + r.w / 2)) / S.p.canvas.w; size.c.y += (size.my - (r.y + r.h / 2)) / S.p.canvas.h;
+    }
     touch();
   });
   const endSize = e => { if (!size || e.pointerId !== size.id) return; size = null; commit(); };

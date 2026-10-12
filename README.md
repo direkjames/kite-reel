@@ -11,9 +11,14 @@ A multi-track editor in the familiar layout: media library on the left, preview 
 - Video, audio and text tracks, as many as you add
 - Import videos, photos and sounds, then drag them onto the timeline
 - Move, trim, split and delete clips, with snapping
+- Select several clips at once (Ctrl and click, or drag a box over empty space) and move, copy, paste or delete them together
+- Speed changes from a quarter speed to four times, with the sound kept in tune
+- Turn, mirror and crop any video or photo
+- Fade in and fade out for videos, photos, text and sounds
+- Transitions between clips that touch: dissolve and flash, added from the small button on the join
 - Text layers with font, size, colour, alignment, outline and background, positioned by dragging in the preview
 - Looks and light and color sliders for each clip, plus size, position and opacity
-- Volume for each clip, fades for sounds, mute and hide for each track
+- Volume for each clip, mute and hide for each track
 - Frame shapes: 16:9, 9:16, 1:1 and 4:5
 - Undo and redo, project files, and your last session restored when you reopen the app
 - Export to MP4
@@ -24,7 +29,10 @@ A multi-track editor in the familiar layout: media library on the left, preview 
 |---|---|
 | Space | Play or pause |
 | S, or Ctrl+B | Split at the playhead |
-| Delete | Delete the selected clip |
+| Delete | Delete the selected clips |
+| Ctrl+C, Ctrl+X, Ctrl+V | Copy, cut, and paste at the playhead |
+| Ctrl+D | Make a copy straight after the selected clips |
+| Ctrl+A, Esc | Select everything, select nothing |
 | T | Add text at the playhead |
 | Left, Right | Step one frame (with Shift, one second) |
 | Home, End | Go to the start or end |
@@ -45,7 +53,7 @@ After that, Kite Reel keeps itself up to date. It checks for a new version when 
 ## Publishing an update
 
 1. Change the code.
-2. Raise the `version` number in `package.json`, for example from `0.1.0` to `0.2.0`.
+2. Raise the `version` number in `package.json`, for example from `0.3.0` to `0.4.0`.
 3. Put the changes on the `main` branch.
 
 GitHub then builds the installer and publishes a release (see the Actions tab). Installed copies pick it up by themselves. If the version number is not raised, nothing is published.

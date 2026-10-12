@@ -46,6 +46,35 @@ function run(args, cwd) {
 }
 
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp']);
+const isJpeg = file => /\.jpe?g$/i.test(file);
+/**
+ * Phones often store a photo on its side, with a note saying which way up it goes. This reads that note from a JPEG:
+ * 1 means as stored, 2 to 8 are the turns and flips (5 and above stand the picture on its side).
+ */
+function photoTurn(file) {
+  try {
+    const fd = fs.openSync(file, 'r'), buf = Buffer.alloc(131072), n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    if (n < 4 || buf.readUInt16BE(0) !== 0xFFD8) return 1;
+    for (let p = 2; p + 4 <= n && buf[p] === 0xFF;) {
+      const marker = buf[p + 1], size = buf.readUInt16BE(p + 2);
+      if (marker === 0xDA) return 1;                               // the picture itself starts here: no note
+      if (marker === 0xE1 && buf.toString('latin1', p + 4, p + 10) === 'Exif\0\0') {
+        const t = p + 10, little = buf.toString('latin1', t, t + 2) === 'II';
+        const u16 = o => (little ? buf.readUInt16LE(o) : buf.readUInt16BE(o)), u32 = o => (little ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+        const list = t + u32(t + 4), count = u16(list);
+        for (let k = 0; k < count && list + 14 + k * 12 <= n; k++) {
+          const e = list + 2 + k * 12;
+          if (u16(e) === 0x0112) { const v = u16(e + 8); return v >= 1 && v <= 8 ? v : 1; }
+        }
+        return 1;
+      }
+      p += 2 + size;
+    }
+  } catch (e) { /* unreadable: treat it as stored the right way up */ }
+  return 1;
+}
+const TURNS = { 2: 'hflip', 3: 'hflip,vflip', 4: 'vflip', 5: 'transpose=0', 6: 'transpose=1', 7: 'transpose=3', 8: 'transpose=2' };
 /** Works out whether a file is a video, a photo or a sound, and reads its length, size and frame rate. */
 async function inspect(file) {
   const { text } = await run(['-hide_banner', '-i', file]);
@@ -63,7 +92,7 @@ async function inspect(file) {
   const fps = videoLine.match(/([\d.]+)\s*fps/) || videoLine.match(/([\d.]+)\s*tbr/);
   const rot = text.match(/rotation of (-?[\d.]+) degrees/);
   let width = size ? +size[1] : 0, height = size ? +size[2] : 0;
-  if (rot && Math.abs(Math.round(+rot[1])) % 180 === 90) [width, height] = [height, width];   // phone clips filmed upright
+  if (isJpeg(file) ? photoTurn(file) >= 5 : rot && Math.abs(Math.round(+rot[1])) % 180 === 90) [width, height] = [height, width];   // phone clips and photos taken upright
   if (!width || !height) throw new Error('Kite Reel could not read the size of that file.');
   const codec = (videoLine.match(/Video:\s*([^\s,(]+)/) || [])[1] || '';
   if (IMAGE_EXT.has(path.extname(file).toLowerCase())) return { kind: 'image', duration: 0, width, height, fps: 0, hasAudio: false, mono: false, codec };
@@ -142,14 +171,29 @@ async function waveform(input) {
 const n3 = v => (+v).toFixed(3);
 const even = v => Math.max(2, Math.round(v / 2) * 2);
 
+/** FFmpeg's speed filter for sound only takes steps between half and double, so bigger changes are done in several steps. */
+function tempo(speed) {
+  const steps = []; let left = speed;
+  while (left > 2.0001) { steps.push('atempo=2.0'); left /= 2; }
+  while (left < 0.4999) { steps.push('atempo=0.5'); left /= 0.5; }
+  if (Math.abs(left - 1) > 1e-4) steps.push(`atempo=${left.toFixed(5)}`);
+  return steps;
+}
+
 /**
  * Turns a project into one FFmpeg run.
  * spec: { outPath, width, height, fps, duration, crf, outHeight (0 keeps the project size),
  *         layers: bottom to top, each one of
- *           { type: 'video', file, in, start, dur, x, y, w, h, opacity, lut }   lut is a .cube colour table as text, or ''
- *           { type: 'image', file,     start, dur, x, y, w, h, opacity, lut }
- *           { type: 'text',  png (Buffer), start, dur, x, y }
- *         audio: [{ file, in, start, dur, volume, fadeIn, fadeOut, mono, layer }]   layer: index of the video layer whose sound this is, or -1 }
+ *           { type: 'video', file, in, len, speed, padStart, padEnd, ...place, ...looks }
+ *           { type: 'image', file, ...place, ...looks }
+ *           { type: 'text',  png (Buffer), x, y, ...looks }
+ *         audio: [{ file, in, len, speed, start, dur, volume, fadeIn, fadeOut, mono, layer }]   layer: index of the video layer whose sound this is, or -1 }
+ *   place: x, y, w, h (where it goes in the frame), rot (0, 90, 180 or 270), flip, crop [left, top, right, bottom] as fractions,
+ *          opacity, lut (a .cube colour table as text, or '')
+ *   looks: start and dur (when it is on screen), fadeIn, fadeOut, whiteIn, whiteOut (seconds, at its two ends),
+ *          patch ({ x, y, w, h, dur }: a part that stays solid over the last dur seconds while the rest fades out)
+ *   For a video, in and len say which stretch of the file to read (in the file's own seconds) and speed how fast to play it;
+ *   padStart and padEnd hold its first and last frame for that long.
  * Every layer becomes an input, is moved to its place on the timeline, and is stacked onto a black background.
  * Small files (colour tables, text pictures, the recipe itself) are written into `dir`, and FFmpeg runs from there,
  * so they can be named plainly without escaping Windows paths.
@@ -159,32 +203,80 @@ function buildExport(spec, dir) {
   const add = (...args) => { inputs.push(...args); return inputs.filter(a => a === '-i').length - 1; };
   const layerInput = [];
   graph.push(`color=c=black:s=${spec.width}x${spec.height}:r=${fps}:d=${n3(total)}[bg0]`);
-  let last = 'bg0';
+  let last = 'bg0', step = 0;
+  const stack = (name, x, y, from, to) => {
+    graph.push(`[${last}][${name}]overlay=x=${x}:y=${y}:enable='gte(t,${n3(from)})*lt(t,${n3(to)})':eof_action=pass[bg${++step}]`);
+    last = `bg${step}`;
+  };
   spec.layers.forEach((L, k) => {
-    const end = L.start + L.dur, when = `enable='gte(t,${n3(L.start)})*lt(t,${n3(end)})':eof_action=pass`;
+    const end = L.start + L.dur, chain = [];
     let i;
-    if (L.type === 'video') i = add('-ss', n3(L.in), '-t', n3(L.dur), '-i', L.file);
-    else if (L.type === 'image') i = add('-loop', '1', '-framerate', String(fps), '-t', n3(L.dur), '-i', L.file);
-    else { fs.writeFileSync(path.join(dir, `text${k}.png`), L.png); i = add('-loop', '1', '-framerate', String(fps), '-t', n3(L.dur), '-i', `text${k}.png`); }
+    if (L.type === 'video') {
+      i = add('-ss', n3(L.in), '-t', n3(L.len), '-i', L.file);
+      if (Math.abs(L.speed - 1) > 1e-4) chain.push(`setpts=(PTS-STARTPTS)/${L.speed.toFixed(5)}`);
+      // holds the first frame for a lead-in, and the last for a lead-out (plus a moment more, in case the file ends a frame early)
+      chain.push(`fps=${fps}`, `tpad=start_mode=clone:start_duration=${n3(L.padStart)}:stop_mode=clone:stop_duration=${n3(L.padEnd + 0.5)}`);
+    } else {
+      if (L.type === 'image') {
+        // a phone photo is turned the right way up here, by its own note, so every FFmpeg version shows it as the preview does
+        const turn = isJpeg(L.file) ? photoTurn(L.file) : 0;
+        i = add(...(turn ? ['-noautorotate'] : []), '-loop', '1', '-framerate', String(fps), '-t', n3(L.dur), '-i', L.file);
+        chain.push(`fps=${fps}`);
+        if (TURNS[turn]) chain.push(TURNS[turn]);
+      } else {
+        fs.writeFileSync(path.join(dir, `text${k}.png`), L.png);
+        i = add('-loop', '1', '-framerate', String(fps), '-t', n3(L.dur), '-i', `text${k}.png`);
+        chain.push(`fps=${fps}`);
+      }
+    }
     layerInput[k] = i;
-    const chain = [`fps=${fps}`];
+    const X = Math.round(L.x), Y = Math.round(L.y);
+    let W = 0, H = 0, rgb = false, alpha = L.type === 'text';
     if (L.type !== 'text') {
-      chain.push(`scale=${even(L.w)}:${even(L.h)}:flags=bicubic`, 'setsar=1');
-      if (L.lut) { fs.writeFileSync(path.join(dir, `look${k}.cube`), L.lut); chain.push('format=rgb24', `lut3d=file=look${k}.cube:interp=tetrahedral`); }
-      if (L.opacity < 0.999) chain.push('format=rgba', `colorchannelmixer=aa=${n3(Math.max(0, L.opacity))}`);
+      W = even(L.w); H = even(L.h);
+      if (L.rot === 90) chain.push('transpose=1'); else if (L.rot === 180) chain.push('hflip', 'vflip'); else if (L.rot === 270) chain.push('transpose=2');
+      if (L.flip) chain.push('hflip');
+      const [cl, ct, cr, cb] = L.crop;
+      if (cl + ct + cr + cb > 1e-4) chain.push(`crop=w=iw*${(1 - cl - cr).toFixed(5)}:h=ih*${(1 - ct - cb).toFixed(5)}:x=iw*${cl.toFixed(5)}:y=ih*${ct.toFixed(5)}`);
+      chain.push(`scale=${W}:${H}:flags=bicubic`, 'setsar=1');
+      if (L.lut) { fs.writeFileSync(path.join(dir, `look${k}.cube`), L.lut); chain.push('format=rgb24', `lut3d=file=look${k}.cube:interp=tetrahedral`); rgb = true; }
     } else chain.push('format=rgba');
-    chain.push(`setpts=PTS-STARTPTS+${n3(L.start)}/TB`);
-    graph.push(`[${i}:v:0]${chain.join(',')}[v${k}]`);
-    graph.push(`[${last}][v${k}]overlay=x=${Math.round(L.x)}:y=${Math.round(L.y)}:${when}[bg${k + 1}]`);
-    last = `bg${k + 1}`;
+    // a flash: out of white at the start, into white at the end
+    if (L.whiteIn > 0.01 || L.whiteOut > 0.01) {
+      if (!rgb && !alpha) chain.push('format=rgb24');
+      if (L.whiteIn > 0.01) chain.push(`fade=t=in:st=0:d=${n3(L.whiteIn)}:color=white`);
+      if (L.whiteOut > 0.01) chain.push(`fade=t=out:st=${n3(L.dur - L.whiteOut)}:d=${n3(L.whiteOut)}:color=white`);
+    }
+    // see-through: a set opacity, and fades at either end
+    const patch = L.patch && L.fadeOut > 0.01 ? L.patch : null;
+    if (L.type !== 'text' && (L.opacity < 0.999 || L.fadeIn > 0.01 || L.fadeOut > 0.01)) { chain.push('format=rgba'); alpha = true; }
+    if (L.type !== 'text' && L.opacity < 0.999) chain.push(`colorchannelmixer=aa=${n3(Math.max(0, L.opacity))}`);
+    if (L.fadeIn > 0.01) chain.push(`fade=t=in:st=0:d=${n3(L.fadeIn)}:alpha=1`);
+    const fadeOut = L.fadeOut > 0.01 ? `fade=t=out:st=${n3(L.dur - L.fadeOut)}:d=${n3(L.fadeOut)}:alpha=1` : '';
+    const place = `setpts=PTS-STARTPTS+${n3(L.start)}/TB`;
+    if (patch) {
+      // the part of this layer that the next clip dissolves in over stays solid, while the rest of it fades away
+      const px = Math.max(0, Math.round(patch.x) - X), py = Math.max(0, Math.round(patch.y) - Y);
+      const pw = Math.max(2, Math.min(Math.round(patch.w), W - px)), ph = Math.max(2, Math.min(Math.round(patch.h), H - py)), from = L.dur - patch.dur;
+      graph.push(`[${i}:v:0]${chain.join(',')},split[m${k}][p${k}]`);
+      graph.push(`[m${k}]${fadeOut},${place}[v${k}]`);
+      graph.push(`[p${k}]trim=start=${n3(from)},crop=${pw}:${ph}:${px}:${py},setpts=PTS-STARTPTS+${n3(L.start + from)}/TB[q${k}]`);
+      stack(`v${k}`, X, Y, L.start, end);
+      stack(`q${k}`, X + px, Y + py, L.start + from, end);
+    } else {
+      if (fadeOut) chain.push(fadeOut);
+      chain.push(place);
+      graph.push(`[${i}:v:0]${chain.join(',')}[v${k}]`);
+      stack(`v${k}`, X, Y, L.start, end);
+    }
   });
   const outH = spec.outHeight > 0 && spec.outHeight < spec.height ? even(spec.outHeight) : 0;
   graph.push(`[${last}]${outH ? `scale=-2:${outH}:flags=bicubic,` : ''}format=yuv420p[vout]`);
 
   const mixed = [];
   spec.audio.forEach((A, k) => {
-    const i = A.layer >= 0 ? layerInput[A.layer] : add('-ss', n3(A.in), '-t', n3(A.dur), '-i', A.file);
-    const chain = ['aresample=48000'];
+    const i = A.layer >= 0 ? layerInput[A.layer] : add('-ss', n3(A.in), '-t', n3(A.len), '-i', A.file);
+    const chain = ['aresample=48000', ...tempo(A.speed)];
     if (A.mono) chain.push('pan=stereo|c0=c0|c1=c0');      // a one-channel sound plays at full level from both speakers
     chain.push('aformat=sample_fmts=fltp:channel_layouts=stereo', `atrim=0:${n3(A.dur)}`, `volume=${n3(Math.max(0, A.volume))}`);
     if (A.fadeIn > 0.01) chain.push(`afade=t=in:st=0:d=${n3(Math.min(A.fadeIn, A.dur))}`);
@@ -208,4 +300,4 @@ function startExport(spec) {
   return startJob(buildExport(spec, dir), { cwd: dir, seconds: Math.max(0.05, +spec.duration), outPath: spec.outPath });
 }
 
-module.exports = { ffmpegPath, inspect, startProxy, proxyArgs, waveform, buildExport, startExport, jobStatus, cancelJob, cancelAll, cleanUp, sweepOld, workDir };
+module.exports = { ffmpegPath, inspect, photoTurn, startProxy, proxyArgs, waveform, buildExport, startExport, jobStatus, cancelJob, cancelAll, cleanUp, sweepOld, workDir };

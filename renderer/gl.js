@@ -4,17 +4,21 @@
 import { KEYS } from './store.js';
 
 const VERT = `
-attribute vec2 aPos; varying vec2 vUv; uniform vec4 uRect;
-void main(){ vUv = vec2(aPos.x * .5 + .5, .5 - aPos.y * .5); gl_Position = vec4(uRect.xy + aPos * uRect.zw, 0., 1.); }`;
+attribute vec2 aPos; varying vec2 vUv; uniform vec4 uRect, uUvM; uniform vec2 uUvO;
+void main(){
+  vec2 p = vec2(aPos.x * .5 + .5, .5 - aPos.y * .5);
+  vUv = uUvO + uUvM.xy * p.x + uUvM.zw * p.y;      // which part of the picture to show: this is how turning, mirroring and cropping happen
+  gl_Position = vec4(uRect.xy + aPos * uRect.zw, 0., 1.);
+}`;
 const FRAG = `
 precision highp float;
 varying vec2 vUv;
 uniform sampler2D uTex;
-uniform float uPlain, uOpacity, uExposure, uContrast, uHighlights, uShadows, uWhites, uBlacks, uTemp, uTint, uVibrance, uSaturation;
+uniform float uPlain, uOpacity, uFlash, uExposure, uContrast, uHighlights, uShadows, uWhites, uBlacks, uTemp, uTint, uVibrance, uSaturation;
 float luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 void main(){
   vec4 s = texture2D(uTex, vUv);
-  if (uPlain > 0.5) { gl_FragColor = s * uOpacity; return; }
+  if (uPlain > 0.5) { gl_FragColor = vec4(mix(s.rgb, vec3(s.a), uFlash), s.a) * uOpacity; return; }
   vec3 lin = pow(s.rgb, vec3(2.2));
   vec3 wb = vec3(1.0 + 0.32 * uTemp + 0.10 * uTint, 1.0 - 0.20 * uTint, 1.0 - 0.32 * uTemp + 0.10 * uTint);
   wb /= luma(wb);
@@ -47,10 +51,11 @@ void main(){
   float sat = clamp(max(g.r, max(g.g, g.b)) - min(g.r, min(g.g, g.b)), 0.0, 1.0);
   float vib = uVibrance > 0.0 ? uVibrance * (1.0 - smoothstep(0.1, 0.8, sat)) : uVibrance * 0.7;
   g = mix(vec3(l2), g, (1.0 + uSaturation) * (1.0 + vib));
-  gl_FragColor = vec4(clamp(g, 0.0, 1.0), 1.0) * uOpacity;
+  gl_FragColor = vec4(mix(clamp(g, 0.0, 1.0), vec3(1.0), uFlash), 1.0) * uOpacity;
 }`;
 const UNI = { exposure: 'uExposure', contrast: 'uContrast', highlights: 'uHighlights', shadows: 'uShadows', whites: 'uWhites', blacks: 'uBlacks', temp: 'uTemp', tint: 'uTint', vibrance: 'uVibrance', saturation: 'uSaturation' };
 export const LUT_N = 33;
+const IDENTITY = [1, 0, 0, 1, 0, 0];
 
 export class Compositor {
   constructor(canvas) {
@@ -70,7 +75,7 @@ export class Compositor {
     gl.bindAttribLocation(p, 0, 'aPos'); gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     this.prog = p; this.u = {};
-    ['uTex', 'uRect', 'uPlain', 'uOpacity', ...Object.values(UNI)].forEach(n => { this.u[n] = gl.getUniformLocation(p, n); });
+    ['uTex', 'uRect', 'uUvM', 'uUvO', 'uPlain', 'uOpacity', 'uFlash', ...Object.values(UNI)].forEach(n => { this.u[n] = gl.getUniformLocation(p, n); });
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -118,29 +123,40 @@ export class Compositor {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     gl.viewport(0, 0, w, h); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.disable(gl.SCISSOR_TEST);
     this.w = w; this.h = h;
   }
-  paint(tex, rect, adj, opacity) {
+  /** Limits drawing to a rectangle given in frame pixels, or lifts the limit when r is null. */
+  only(r, fw, fh) {
+    const gl = this.gl;
+    if (!r) { gl.disable(gl.SCISSOR_TEST); return; }
+    const kx = this.w / fw, ky = this.h / fh, x0 = Math.round(r.x * kx), x1 = Math.round((r.x + r.w) * kx), y0 = Math.round((fh - r.y - r.h) * ky), y1 = Math.round((fh - r.y) * ky);
+    gl.enable(gl.SCISSOR_TEST); gl.scissor(x0, y0, Math.max(0, x1 - x0), Math.max(0, y1 - y0));
+  }
+  paint(tex, rect, adj, opacity, uv = IDENTITY, flash = 0) {
     const gl = this.gl, u = this.u;
     gl.useProgram(this.prog);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.uniform1i(u.uTex, 0);
     gl.uniform4f(u.uRect, rect[0], rect[1], rect[2], rect[3]);
-    gl.uniform1f(u.uPlain, adj ? 0 : 1); gl.uniform1f(u.uOpacity, opacity);
+    gl.uniform4f(u.uUvM, uv[0], uv[1], uv[2], uv[3]); gl.uniform2f(u.uUvO, uv[4], uv[5]);
+    gl.uniform1f(u.uPlain, adj ? 0 : 1); gl.uniform1f(u.uOpacity, opacity); gl.uniform1f(u.uFlash, flash);
     if (adj) KEYS.forEach(k => gl.uniform1f(u[UNI[k]], k === 'exposure' ? adj[k] : adj[k] / 100));
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
-  /** Draws layer `key` at a rectangle given in frame pixels (of a frame fw by fh). adj null means leave colours alone. */
-  layer(key, r, fw, fh, adj, opacity = 1) {
-    const t = this.tex.get(key); if (!t) return;
+  /**
+   * Draws layer `key` at a rectangle given in frame pixels (of a frame fw by fh). adj null means leave colours alone.
+   * uv says which part of the picture goes there (see uvOf); flash washes it out towards white.
+   */
+  layer(key, r, fw, fh, adj, opacity = 1, uv = IDENTITY, flash = 0) {
+    const t = this.tex.get(key); if (!t || opacity <= 0) return;
     const cx = (r.x + r.w / 2) / fw * 2 - 1, cy = 1 - (r.y + r.h / 2) / fh * 2;
-    this.paint(t, [cx, cy, r.w / fw, r.h / fh], adj, opacity);
+    this.paint(t, [cx, cy, r.w / fw, r.h / fh], adj, opacity, uv, flash);
   }
   /** A look as 33x33x33 colours: run every colour of the identity table through the sliders and note what comes out. */
   cube(adj) {
     const gl = this.gl, N = LUT_N, w = N * N, h = N;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fb);
-    gl.viewport(0, 0, w, h); gl.disable(gl.BLEND);
+    gl.viewport(0, 0, w, h); gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST);
     this.paint(this.table, [0, 0, 1, 1], adj, 1);
     const raw = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, raw);

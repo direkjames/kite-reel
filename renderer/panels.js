@@ -1,5 +1,6 @@
 // The media library on the left and the properties panel on the right, plus importing and loading projects.
-import { S, on, emit, LOOKS, CANVASES, KEYS, freshAdj, mediaOf, selected, commit, touch, select, addMediaClip, addTextClip, setCanvas, duration, fillScale, resetHistory, newProject, trackKindFor } from './store.js';
+import { S, on, emit, LOOKS, CANVASES, SPEEDS, mediaOf, clipOf, selected, commit, touch, select, addMediaClip, addTextClip, setCanvas, duration, resetHistory, trackKindFor,
+  upgradeProject, clearCopied, frameClip, turnClip, mirrorClip, setSpeed, speedOf, prevTouching, linkIn, linkOut } from './store.js';
 import { requestRender, seek } from './player.js';
 import { dropTarget, clearDrop, zoomFit, reveal } from './timeline.js';
 import { FONTS } from './text.js';
@@ -71,8 +72,8 @@ export async function pickAndImport() {
 }
 /** Replaces the whole project, re-reading every file it uses. Files that have moved are kept but marked missing. */
 export async function loadProject(project, path) {
-  S.rt.clear(); S.sel = null; S.t = 0;
-  S.p = Object.assign(newProject(), project); S.path = path || '';
+  S.rt.clear(); S.sel = []; S.cut = null; S.t = 0; clearCopied();
+  S.p = upgradeProject(project); S.path = path || '';
   let missing = 0;
   for (const m of S.p.media) {
     busy('Opening ' + m.name);
@@ -171,10 +172,72 @@ const head = (title, detail) => el('div', { className: 'pane-head' }, [el('h2', 
 const sub = text => el('h3', { className: 'sub', textContent: text });
 const pct = v => Math.round(v) + '%';
 
+const secs = v => (v === 0 ? 'Off' : v.toFixed(1) + ' s');
+const volume = c => prop(c, 'volume', { id: 's-volume', label: 'Volume', min: 0, max: 100, rest: 100, fmt: v => (v === 0 ? 'Muted' : pct(v)), to: v => v * 100, from: v => v / 100 });
+function fades(c) {
+  const note = el('p', { className: 'hint' });
+  // a transition at one end of a clip takes the place of the fade there, so say so rather than leave a slider that seems broken
+  refreshers.push(() => {
+    const a = c.fadeIn > 0 && linkIn(c), b = c.fadeOut > 0 && linkOut(c);
+    note.hidden = !a && !b;
+    note.textContent = a && b ? 'The transitions at both ends of this clip take the place of its fades.' : a ? 'The transition at the start of this clip takes the place of its fade in.' : 'The transition at the end of this clip takes the place of its fade out.';
+  });
+  return [prop(c, 'fadeIn', { id: 's-fade-in', label: 'Fade in', min: 0, max: 5, step: 0.1, fmt: secs }), prop(c, 'fadeOut', { id: 's-fade-out', label: 'Fade out', min: 0, max: 5, step: 0.1, fmt: secs }), note];
+}
+/** A slider over the list of speeds. Changing it changes how long the clip is. */
+function speed(c) {
+  const at = () => Math.max(0, SPEEDS.indexOf(speedOf(c)));
+  const row = slider({ id: 's-speed', label: 'Speed', min: 0, max: SPEEDS.length - 1, step: 1, value: at(), rest: SPEEDS.indexOf(1), fmt: i => SPEEDS[i] + '×',
+    onInput: i => { setSpeed(c, SPEEDS[i]); touch(); }, onDone: () => commit() });
+  const input = row.querySelector('input');
+  refreshers.push(() => { if (!live(input)) { input.value = at(); paint(input); } });
+  return row;
+}
+let videoTab = 'clip';
 function videoPanel(c, box) {
   const m = mediaOf(c.media);
   box.append(head(c.kind === 'image' ? 'Photo' : 'Video', m ? m.name : ''));
-  box.append(sub('Look'));
+  const pages = { clip: el('div', { className: 'tabpage' }), colour: el('div', { className: 'tabpage' }) };
+  const tabs = el('div', { className: 'seg tabs' });
+  [['clip', 'Clip'], ['colour', 'Colour']].forEach(([v, label]) => {
+    const b = el('button', { type: 'button', id: 'tab-' + v, textContent: label });
+    b.addEventListener('click', () => { videoTab = v; show(); });
+    tabs.append(b);
+  });
+  const show = () => { for (const k in pages) { pages[k].hidden = k !== videoTab; $('#tab-' + k, tabs).setAttribute('aria-pressed', String(k === videoTab)); } };
+  box.append(tabs, pages.clip, pages.colour); show();
+
+  /* ----- Clip: where it sits, what part shows, how fast, how it comes and goes ----- */
+  const P = pages.clip;
+  P.append(sub('Size and position'),
+    prop(c, 'scale', { id: 's-scale', label: 'Size', min: 10, max: 400, rest: 100, fmt: pct, to: v => v * 100, from: v => v / 100 }),
+    prop(c, 'opacity', { id: 's-opacity', label: 'Opacity', min: 0, max: 100, rest: 100, fmt: pct, to: v => v * 100, from: v => v / 100 }));
+  const button = (id, text, title, act) => { const b = el('button', { type: 'button', className: 'btn small', id, textContent: text, title }); b.addEventListener('click', () => { act(); commit(); }); return b; };
+  P.append(el('div', { className: 'pair' }, [
+    button('btn-fit-frame', 'Fit the frame', 'Show the whole picture', () => frameClip(c, false)),
+    button('btn-fill-frame', 'Fill the frame', 'Cover the frame, cutting off the edges that do not fit', () => frameClip(c, true))]));
+  P.append(el('div', { className: 'trio' }, [
+    button('btn-turn-left', 'Turn left', 'Turn a quarter turn to the left', () => turnClip(c, false)),
+    button('btn-turn-right', 'Turn right', 'Turn a quarter turn to the right', () => turnClip(c, true)),
+    button('btn-mirror', 'Mirror', 'Flip left to right', () => mirrorClip(c))]));
+  P.append(sub('Crop'));
+  const edge = (key, label, across) => {
+    // each edge can be cut in until a tenth of the picture is left
+    const row = slider({ id: 's-crop-' + key, label, min: 0, max: 90, value: c.crop[key] * 100, fmt: pct,
+      onInput: v => { c.crop[key] = Math.min(v / 100, 0.9 - c.crop[across]); touch(); }, onDone: () => commit() });
+    const input = row.querySelector('input');
+    refreshers.push(() => { if (!live(input)) { input.value = Math.round(c.crop[key] * 100); paint(input); } });
+    return row;
+  };
+  P.append(edge('l', 'Left', 'r'), edge('r', 'Right', 'l'), edge('t', 'Top', 'b'), edge('b', 'Bottom', 't'));
+  if (c.kind === 'video') P.append(sub('Speed'), speed(c));
+  P.append(sub('Fade'), ...fades(c));
+  if (c.kind === 'video' && m && m.hasAudio) P.append(sub('Sound'), volume(c));
+  P.append(el('p', { className: 'hint', textContent: 'Drag the picture in the preview to move it. Drag the round handle to resize it.' }));
+
+  /* ----- Colour ----- */
+  const C = pages.colour;
+  C.append(sub('Look'));
   const looks = el('div', { className: 'looks' });
   LOOKS.forEach(L => {
     const chip = el('i'); chip.style.background = L.chip;
@@ -183,7 +246,7 @@ function videoPanel(c, box) {
     looks.append(b);
   });
   refreshers.push(() => LOOKS.forEach(L => $('#look-' + L.id, looks).setAttribute('aria-pressed', String(c.look === L.id))));
-  box.append(looks);
+  C.append(looks);
   const adj = (key, label, extra = {}) => {
     const row = slider({ id: 's-' + key, label, value: c.adj[key], ...extra, onInput: v => { c.adj[key] = v; c.look = null; touch(); }, onDone: () => commit() });
     const input = row.querySelector('input');
@@ -191,25 +254,39 @@ function videoPanel(c, box) {
     return row;
   };
   const stops = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v).toFixed(2);
-  box.append(sub('Light'), adj('exposure', 'Exposure', { min: -3, max: 3, step: 0.01, fmt: stops }), adj('contrast', 'Contrast'), adj('highlights', 'Highlights'), adj('shadows', 'Shadows'), adj('whites', 'Whites'), adj('blacks', 'Blacks'));
-  box.append(sub('Color'), adj('temp', 'Warmth', { grad: 'linear-gradient(to right,#3b82f6,var(--track) 50%,#f5b83d)' }), adj('tint', 'Tint', { grad: 'linear-gradient(to right,#3fae5a,var(--track) 50%,#d946b8)' }), adj('vibrance', 'Vibrance'), adj('saturation', 'Saturation'));
-  box.append(sub('Size and position'),
-    prop(c, 'scale', { id: 's-scale', label: 'Size', min: 10, max: 400, rest: 100, fmt: pct, to: v => v * 100, from: v => v / 100 }),
-    prop(c, 'opacity', { id: 's-opacity', label: 'Opacity', min: 0, max: 100, rest: 100, fmt: pct, to: v => v * 100, from: v => v / 100 }));
-  const fit = el('button', { type: 'button', className: 'btn small', id: 'btn-fit-frame', textContent: 'Fit the frame', title: 'Show the whole picture' });
-  const fill = el('button', { type: 'button', className: 'btn small', id: 'btn-fill-frame', textContent: 'Fill the frame', title: 'Cover the frame, cropping the edges' });
-  fit.addEventListener('click', () => { c.scale = 1; c.x = 0; c.y = 0; commit(); });
-  fill.addEventListener('click', () => { c.scale = fillScale(c); c.x = 0; c.y = 0; commit(); });
-  box.append(el('div', { className: 'pair' }, [fit, fill]));
-  if (c.kind === 'video' && m && m.hasAudio) box.append(sub('Sound'), prop(c, 'volume', { id: 's-volume', label: 'Volume', min: 0, max: 100, rest: 100, fmt: v => (v === 0 ? 'Muted' : pct(v)), to: v => v * 100, from: v => v / 100 }));
-  box.append(el('p', { className: 'hint', textContent: 'Drag the picture in the preview to move it. Drag the round handle to resize it.' }));
+  C.append(sub('Light'), adj('exposure', 'Exposure', { min: -3, max: 3, step: 0.01, fmt: stops }), adj('contrast', 'Contrast'), adj('highlights', 'Highlights'), adj('shadows', 'Shadows'), adj('whites', 'Whites'), adj('blacks', 'Blacks'));
+  C.append(sub('Color'), adj('temp', 'Warmth', { grad: 'linear-gradient(to right,#3b82f6,var(--track) 50%,#f5b83d)' }), adj('tint', 'Tint', { grad: 'linear-gradient(to right,#3fae5a,var(--track) 50%,#d946b8)' }), adj('vibrance', 'Vibrance'), adj('saturation', 'Saturation'));
 }
 function audioPanel(c, box) {
-  const m = mediaOf(c.media), secs = v => v.toFixed(1) + ' s';
-  box.append(head('Sound', m ? m.name : ''),
-    prop(c, 'volume', { id: 's-volume', label: 'Volume', min: 0, max: 100, rest: 100, fmt: v => (v === 0 ? 'Muted' : pct(v)), to: v => v * 100, from: v => v / 100 }),
-    prop(c, 'fadeIn', { id: 's-fade-in', label: 'Fade in', min: 0, max: 5, step: 0.1, fmt: secs }),
-    prop(c, 'fadeOut', { id: 's-fade-out', label: 'Fade out', min: 0, max: 5, step: 0.1, fmt: secs }));
+  const m = mediaOf(c.media);
+  box.append(head('Sound', m ? m.name : ''), volume(c), speed(c), ...fades(c));
+}
+const nameOf = c => (c.kind === 'text' ? `“${String(c.text).split('\n')[0]}”` : (mediaOf(c.media) || {}).name || 'clip');
+/** The join between two touching clips: pick how one gives way to the other. */
+function cutPanel(b, box) {
+  const a = prevTouching(b);
+  box.append(head('Transition'));
+  box.append(el('p', { className: 'hint', textContent: a ? `From ${nameOf(a)} to ${nameOf(b)}.` : '' }));
+  box.append(el('div', { className: 'field' }, [el('span', { textContent: 'Kind' }),
+    seg([['none', 'None'], ['dissolve', 'Dissolve'], ['flash', 'Flash']], () => (b.trans ? b.trans.type : 'none'),
+      v => { if (v === 'none') delete b.trans; else b.trans = { type: v, dur: b.trans ? b.trans.dur : 0.5 }; })]));
+  const row = slider({ id: 's-trans', label: 'Length', min: 0.2, max: 2, step: 0.1, value: 0.5, rest: 0.5, fmt: v => v.toFixed(1) + ' s',
+    onInput: v => { if (b.trans) { b.trans.dur = v; touch(); } }, onDone: () => commit() });
+  const input = row.querySelector('input'), note = el('p', { className: 'hint' });
+  refreshers.push(() => {
+    input.disabled = !b.trans; row.hidden = !b.trans;
+    if (b.trans && !live(input)) { input.value = b.trans.dur; paint(input); }
+    const link = linkIn(b);
+    note.textContent = !b.trans ? 'Dissolve blends one clip into the next. Flash cuts through a burst of white.'
+      : link && link.dur < b.trans.dur - 0.01 ? `Held to ${link.dur.toFixed(1)} s, the length of the shorter clip.`
+      : b.trans.type === 'dissolve' ? 'Each clip plays a little past the cut while they blend. Where a clip has no more footage, it holds its last frame.' : '';
+  });
+  box.append(row, note);
+}
+function manyPanel(n, box) {
+  box.append(head(`${n} clips selected`));
+  box.append(el('p', { className: 'hint', textContent: 'Drag one of them to move them all together. Copy, Paste and Delete work on all of them.' }),
+    el('p', { className: 'hint', textContent: 'Ctrl+D makes a copy straight after them. Click a single clip to change its settings.' }));
 }
 const TEXT_COLORS = ['#ffffff', '#111111', '#ffd23e', '#ff5a4e', '#38a0ff', '#3fd08a'];
 function textPanel(c, box) {
@@ -241,6 +318,7 @@ function textPanel(c, box) {
   const mid = el('button', { type: 'button', className: 'btn small', textContent: 'Centre in the frame' });
   mid.addEventListener('click', () => { c.x = 0; c.y = 0; commit(); });
   box.append(el('div', { className: 'pair' }, [mid]));
+  box.append(sub('Fade'), ...fades(c));
   box.append(el('p', { className: 'hint', textContent: 'Drag the text in the preview to move it.' }));
 }
 function projectPanel(box) {
@@ -249,24 +327,32 @@ function projectPanel(box) {
     seg(Object.keys(CANVASES).map(k => [k, k]), () => S.p.canvas.shape, v => { setCanvas(v); })]));
   const info = el('p', { className: 'hint', id: 'project-info' });
   refreshers.push(() => { info.textContent = `${S.p.canvas.w} × ${S.p.canvas.h}, ${S.p.canvas.fps} frames a second, ${fmtTime(duration())} long.`; });
-  box.append(info, el('p', { className: 'hint', textContent: 'Select a clip on the timeline to change it.' }));
+  box.append(info, el('p', { className: 'hint', textContent: 'Select a clip on the timeline to change it. Hold Ctrl and click, or drag a box over empty space, to select several.' }),
+    el('p', { className: 'hint', textContent: 'Where two clips touch, the small button on the join adds a transition.' }));
   box.append(el('p', { className: 'version', id: 'version', textContent: projectPanel.version || '' }));
 }
-let shownFor = null;
+let shownFor = null, boundTo = null;
+/** What the panel is about: a transition, one clip, several clips, or the project. */
+function subject() {
+  if (S.cut && clipOf(S.cut)) return ['cut:' + S.cut, clipOf(S.cut)];
+  const c = selected();
+  return c ? ['clip:' + c.id, c] : S.sel.length > 1 ? ['many:' + S.sel.length, null] : ['project', null];
+}
 function buildInspector() {
-  const box = $('#inspector'), c = selected();
-  refreshers = []; box.textContent = ''; shownFor = c ? c.id : '';
-  if (!c) projectPanel(box);
+  const box = $('#inspector'), [key, c] = subject();
+  refreshers = []; box.textContent = ''; shownFor = key; boundTo = c;
+  if (key.startsWith('cut:')) cutPanel(c, box);
+  else if (key.startsWith('many:')) manyPanel(S.sel.length, box);
+  else if (!c) projectPanel(box);
   else if (c.kind === 'text') textPanel(c, box);
   else if (c.kind === 'audio') audioPanel(c, box);
   else videoPanel(c, box);
   refreshers.forEach(f => f());
 }
-let boundClip = null;
 /** Brings the panel up to date. Undo and redo replace the clip objects, so then the panel is rebuilt around the new one. */
 function syncInspector() {
-  const c = selected();
-  if (c !== boundClip || (c ? c.id : '') !== shownFor) { boundClip = c; buildInspector(); }
+  const [key, c] = subject();
+  if (key !== shownFor || c !== boundTo) buildInspector();
   else refreshers.forEach(f => f());
 }
 
@@ -278,7 +364,7 @@ export function init() {
   on('history', syncInspector);
   on('time', syncInfo);
   api('info').then(i => { projectPanel.version = 'Kite Reel ' + i.version; const v = $('#version'); if (v) v.textContent = projectPanel.version; }).catch(() => {});
-  buildBin(); syncInspector(); buildInspector(); syncInfo();
+  buildBin(); buildInspector(); syncInfo();
 }
 function syncInfo() {
   $('#t-now').textContent = fmtTime(S.t); $('#t-total').textContent = ' / ' + fmtTime(duration());

@@ -78,16 +78,26 @@ function start({ version = '0.0.0', rendererDir = path.join(__dirname, '..', 're
     if (!(duration > 0)) throw new Error('There is nothing on the timeline to export.');
     if (!body.outPath) throw new Error('Choose where to save first.');
     const layers = (Array.isArray(body.layers) ? body.layers : []).map(L => {
-      const base = { type: L.type, start: num(L.start, 0, duration), dur: num(L.dur, 0.01, 86400, 0.01), x: num(L.x, -1e5, 1e5, 0), y: num(L.y, -1e5, 1e5, 0) };
+      const dur = num(L.dur, 0.01, 86400, 0.01);
+      const base = { type: L.type, start: num(L.start, 0, duration), dur, x: num(L.x, -1e5, 1e5, 0), y: num(L.y, -1e5, 1e5, 0),
+        fadeIn: num(L.fadeIn, 0, dur, 0), fadeOut: num(L.fadeOut, 0, dur, 0), whiteIn: num(L.whiteIn, 0, dur, 0), whiteOut: num(L.whiteOut, 0, dur, 0) };
       if (L.type === 'text') return { ...base, png: Buffer.from(String(L.png || ''), 'base64') };
       if (L.type !== 'video' && L.type !== 'image') throw new Error('Unknown layer.');
-      return { ...base, file: fileOf(L.id), in: num(L.in, 0, 86400, 0), w: num(L.w, 2, 1e5), h: num(L.h, 2, 1e5), opacity: num(L.opacity, 0, 1, 1), lut: Number.isInteger(L.lut) && luts[L.lut] ? luts[L.lut] : '' };
+      const crop = [0, 1, 2, 3].map(i => num(Array.isArray(L.crop) ? L.crop[i] : 0, 0, 0.95, 0));
+      if (crop[0] + crop[2] > 0.95 || crop[1] + crop[3] > 0.95) throw new Error('A clip is cropped away to nothing.');
+      const P = L.patch && typeof L.patch === 'object' ? L.patch : null;
+      return { ...base, file: fileOf(L.id), in: num(L.in, 0, 86400, 0), len: num(L.len, 0.01, 86400, dur), speed: num(L.speed, 0.1, 10, 1),
+        padStart: num(L.padStart, 0, 60, 0), padEnd: num(L.padEnd, 0, 60, 0), w: num(L.w, 2, 1e5), h: num(L.h, 2, 1e5),
+        rot: [0, 90, 180, 270].includes(L.rot) ? L.rot : 0, flip: !!L.flip, crop, opacity: num(L.opacity, 0, 1, 1),
+        lut: Number.isInteger(L.lut) && luts[L.lut] ? luts[L.lut] : '',
+        patch: P ? { x: num(P.x, -1e5, 1e5, 0), y: num(P.y, -1e5, 1e5, 0), w: num(P.w, 2, 1e5), h: num(P.h, 2, 1e5), dur: num(P.dur, 0.01, dur, 0.01) } : null };
     });
-    const audio = (Array.isArray(body.audio) ? body.audio : []).map(A => ({
-      file: A.layer >= 0 ? '' : fileOf(A.id), layer: Number.isInteger(A.layer) && A.layer >= 0 && A.layer < layers.length ? A.layer : -1,
-      in: num(A.in, 0, 86400, 0), start: num(A.start, 0, duration), dur: num(A.dur, 0.01, 86400, 0.01),
-      volume: num(A.volume, 0, 4, 1), fadeIn: num(A.fadeIn, 0, 600, 0), fadeOut: num(A.fadeOut, 0, 600, 0), mono: !!A.mono,
-    }));
+    const audio = (Array.isArray(body.audio) ? body.audio : []).map(A => {
+      const dur = num(A.dur, 0.01, 86400, 0.01);
+      return { file: A.layer >= 0 ? '' : fileOf(A.id), layer: Number.isInteger(A.layer) && A.layer >= 0 && A.layer < layers.length ? A.layer : -1,
+        in: num(A.in, 0, 86400, 0), len: num(A.len, 0.01, 86400, dur), speed: num(A.speed, 0.1, 10, 1), start: num(A.start, 0, duration), dur,
+        volume: num(A.volume, 0, 4, 1), fadeIn: num(A.fadeIn, 0, 600, 0), fadeOut: num(A.fadeOut, 0, 600, 0), mono: !!A.mono };
+    });
     for (const f of new Set([...layers.map(l => l.file), ...audio.map(a => a.file)].filter(Boolean))) {
       if (path.resolve(String(body.outPath)) === path.resolve(f)) throw new Error('Pick a different name so one of your original files is not overwritten.');
     }
